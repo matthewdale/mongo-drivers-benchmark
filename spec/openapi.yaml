@@ -1,0 +1,609 @@
+openapi: 3.1.0
+info:
+  title: MongoDB Driver Benchmark HTTP API
+  version: 0.1.0
+  description: |
+    Machine-readable companion to `http-api.md`. The prose spec is
+    authoritative when the two diverge. See SKUNK-339.
+
+    Every command endpoint accepts `database` (optional, default
+    `perftest`) and `collection` (required, except on `/clientBulkWrite`).
+    All request and response bodies use plain JSON.
+  license:
+    name: Apache-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Default local service
+
+tags:
+  - name: control
+    description: Service lifecycle endpoints
+  - name: read
+    description: Read commands
+  - name: write
+    description: Single-document write commands
+  - name: bulk
+    description: Bulk-write commands
+
+paths:
+  /health:
+    get:
+      tags: [control]
+      summary: Service readiness probe
+      responses:
+        "200":
+          description: Driver is connected and the service is ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthOk"
+        "503":
+          $ref: "#/components/responses/NotReady"
+
+  /find:
+    post:
+      tags: [read]
+      summary: Run find(filter, options) and return all documents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/Namespaced"
+                - type: object
+                  required: [filter]
+                  properties:
+                    filter:
+                      $ref: "#/components/schemas/Document"
+                    options:
+                      $ref: "#/components/schemas/FindOptions"
+      responses:
+        "200":
+          description: Cursor exhausted; all documents returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [documents, count]
+                properties:
+                  documents:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Document"
+                  count:
+                    type: integer
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+  /findOne:
+    post:
+      tags: [read]
+      summary: Run findOne(filter, options)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/Namespaced"
+                - type: object
+                  required: [filter]
+                  properties:
+                    filter:
+                      $ref: "#/components/schemas/Document"
+                    options:
+                      $ref: "#/components/schemas/FindOneOptions"
+      responses:
+        "200":
+          description: Match (or `{"document": null}` on miss).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [document]
+                properties:
+                  document:
+                    oneOf:
+                      - $ref: "#/components/schemas/Document"
+                      - type: "null"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+  /insertOne:
+    post:
+      tags: [write]
+      summary: Run insertOne(document, options)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/Namespaced"
+                - type: object
+                  required: [document]
+                  properties:
+                    document:
+                      $ref: "#/components/schemas/Document"
+                    options:
+                      $ref: "#/components/schemas/InsertOptions"
+      responses:
+        "200":
+          description: Inserted document _id.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [insertedId]
+                properties:
+                  insertedId:
+                    description: The _id of the inserted document as serialized by the driver.
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+  /insertMany:
+    post:
+      tags: [bulk]
+      summary: Run insertMany(documents, options)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/Namespaced"
+                - type: object
+                  required: [documents]
+                  properties:
+                    documents:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/Document"
+                    options:
+                      $ref: "#/components/schemas/InsertManyOptions"
+      responses:
+        "200":
+          description: Inserted count (and optional ids).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [insertedCount]
+                properties:
+                  insertedCount:
+                    type: integer
+                  insertedIds:
+                    type: object
+                    description: Map of insertion index to _id, as serialized by the driver.
+                    additionalProperties: true
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+  /updateOne:
+    post:
+      tags: [write]
+      summary: Run updateOne(filter, update, options)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRequest"
+      responses:
+        "200":
+          description: Update result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateResponse"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+  /updateMany:
+    post:
+      tags: [write]
+      summary: Run updateMany(filter, update, options)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRequest"
+      responses:
+        "200":
+          description: Update result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateResponse"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+  /deleteOne:
+    post:
+      tags: [write]
+      summary: Run deleteOne(filter)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          description: Delete result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResponse"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+  /deleteMany:
+    post:
+      tags: [write]
+      summary: Run deleteMany(filter)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          description: Delete result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResponse"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+  /bulkWrite:
+    post:
+      tags: [bulk]
+      summary: Run collection.bulkWrite(operations, options)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/Namespaced"
+                - type: object
+                  required: [operations]
+                  properties:
+                    operations:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/BulkWriteOperation"
+                    options:
+                      $ref: "#/components/schemas/BulkWriteOptions"
+      responses:
+        "200":
+          description: Bulk result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkWriteResponse"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+  /clientBulkWrite:
+    post:
+      tags: [bulk]
+      summary: Run client.bulkWrite(models, options) across namespaces
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [models]
+              properties:
+                models:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/ClientBulkWriteModel"
+                options:
+                  $ref: "#/components/schemas/ClientBulkWriteOptions"
+      responses:
+        "200":
+          description: Bulk result, optionally with verbose per-op results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBulkWriteResponse"
+        "400":
+          description: Invalid request (e.g. top-level database/collection supplied).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Driver or server does not support clientBulkWrite.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    Document:
+      description: Any JSON object used as a MongoDB document, filter, update, or document specification.
+      type: object
+      additionalProperties: true
+
+    Namespaced:
+      description: Mixin for endpoints that take database/collection.
+      type: object
+      required: [collection]
+      properties:
+        database:
+          type: string
+          default: perftest
+        collection:
+          type: string
+
+    HealthOk:
+      type: object
+      required: [status, driver, driverVersion, language, languageVersion]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        driver:
+          type: string
+        driverVersion:
+          type: string
+        language:
+          type: string
+          enum: [go, node, python, java, php]
+        languageVersion:
+          type: string
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    FindOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        limit:      { type: integer }
+        skip:       { type: integer }
+        sort:       { $ref: "#/components/schemas/Document" }
+        projection: { $ref: "#/components/schemas/Document" }
+        batchSize:  { type: integer }
+
+    FindOneOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        sort:       { $ref: "#/components/schemas/Document" }
+        projection: { $ref: "#/components/schemas/Document" }
+
+    InsertOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        bypassDocumentValidation: { type: boolean }
+
+    InsertManyOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        ordered:                  { type: boolean }
+        bypassDocumentValidation: { type: boolean }
+
+    UpdateRequest:
+      allOf:
+        - $ref: "#/components/schemas/Namespaced"
+        - type: object
+          required: [filter, update]
+          properties:
+            filter: { $ref: "#/components/schemas/Document" }
+            update: { $ref: "#/components/schemas/Document" }
+            options:
+              type: object
+              additionalProperties: false
+              properties:
+                upsert:       { type: boolean }
+                arrayFilters:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Document"
+
+    UpdateResponse:
+      type: object
+      required: [matchedCount, modifiedCount, upsertedId]
+      properties:
+        matchedCount:  { type: integer }
+        modifiedCount: { type: integer }
+        upsertedId:
+          description: The _id of the upserted document, or null if no upsert occurred.
+
+    DeleteRequest:
+      allOf:
+        - $ref: "#/components/schemas/Namespaced"
+        - type: object
+          required: [filter]
+          properties:
+            filter: { $ref: "#/components/schemas/Document" }
+
+    DeleteResponse:
+      type: object
+      required: [deletedCount]
+      properties:
+        deletedCount: { type: integer }
+
+    BulkWriteOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        ordered:                  { type: boolean }
+        bypassDocumentValidation: { type: boolean }
+
+    BulkWriteOperation:
+      type: object
+      oneOf:
+        - required: [insertOne]
+          properties:
+            insertOne:
+              type: object
+              required: [document]
+              properties:
+                document: { $ref: "#/components/schemas/Document" }
+        - required: [updateOne]
+          properties:
+            updateOne:
+              type: object
+              required: [filter, update]
+              properties:
+                filter: { $ref: "#/components/schemas/Document" }
+                update: { $ref: "#/components/schemas/Document" }
+                upsert: { type: boolean }
+                arrayFilters:
+                  type: array
+                  items: { $ref: "#/components/schemas/Document" }
+        - required: [updateMany]
+          properties:
+            updateMany:
+              type: object
+              required: [filter, update]
+              properties:
+                filter: { $ref: "#/components/schemas/Document" }
+                update: { $ref: "#/components/schemas/Document" }
+                upsert: { type: boolean }
+                arrayFilters:
+                  type: array
+                  items: { $ref: "#/components/schemas/Document" }
+        - required: [replaceOne]
+          properties:
+            replaceOne:
+              type: object
+              required: [filter, replacement]
+              properties:
+                filter:      { $ref: "#/components/schemas/Document" }
+                replacement: { $ref: "#/components/schemas/Document" }
+                upsert:      { type: boolean }
+        - required: [deleteOne]
+          properties:
+            deleteOne:
+              type: object
+              required: [filter]
+              properties:
+                filter: { $ref: "#/components/schemas/Document" }
+        - required: [deleteMany]
+          properties:
+            deleteMany:
+              type: object
+              required: [filter]
+              properties:
+                filter: { $ref: "#/components/schemas/Document" }
+
+    BulkWriteResponse:
+      type: object
+      required: [insertedCount, matchedCount, modifiedCount, deletedCount, upsertedCount]
+      properties:
+        insertedCount: { type: integer }
+        matchedCount:  { type: integer }
+        modifiedCount: { type: integer }
+        deletedCount:  { type: integer }
+        upsertedCount: { type: integer }
+
+    ClientBulkWriteOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        ordered:                  { type: boolean }
+        bypassDocumentValidation: { type: boolean }
+        verboseResults:           { type: boolean }
+
+    ClientBulkWriteModel:
+      description: |
+        One operation in a multi-namespace bulkWrite. Carries its own
+        `namespace` ("<db>.<coll>") and exactly one operation kind.
+      type: object
+      required: [namespace]
+      properties:
+        namespace:
+          type: string
+          pattern: "^[^.]+\\..+$"
+        insertOne:
+          type: object
+          required: [document]
+          properties:
+            document: { $ref: "#/components/schemas/Document" }
+        updateOne:
+          type: object
+          required: [filter, update]
+          properties:
+            filter: { $ref: "#/components/schemas/Document" }
+            update: { $ref: "#/components/schemas/Document" }
+            upsert: { type: boolean }
+            arrayFilters:
+              type: array
+              items: { $ref: "#/components/schemas/Document" }
+        updateMany:
+          type: object
+          required: [filter, update]
+          properties:
+            filter: { $ref: "#/components/schemas/Document" }
+            update: { $ref: "#/components/schemas/Document" }
+            upsert: { type: boolean }
+            arrayFilters:
+              type: array
+              items: { $ref: "#/components/schemas/Document" }
+        replaceOne:
+          type: object
+          required: [filter, replacement]
+          properties:
+            filter:      { $ref: "#/components/schemas/Document" }
+            replacement: { $ref: "#/components/schemas/Document" }
+            upsert:      { type: boolean }
+        deleteOne:
+          type: object
+          required: [filter]
+          properties:
+            filter: { $ref: "#/components/schemas/Document" }
+        deleteMany:
+          type: object
+          required: [filter]
+          properties:
+            filter: { $ref: "#/components/schemas/Document" }
+
+    ClientBulkWriteResponse:
+      type: object
+      required: [insertedCount, matchedCount, modifiedCount, deletedCount, upsertedCount]
+      properties:
+        insertedCount: { type: integer }
+        matchedCount:  { type: integer }
+        modifiedCount: { type: integer }
+        deletedCount:  { type: integer }
+        upsertedCount: { type: integer }
+        verboseResults:
+          type: object
+          description: Per-operation results when verboseResults option is true.
+          properties:
+            insertResults:
+              type: object
+              additionalProperties: true
+            updateResults:
+              type: object
+              additionalProperties: true
+            deleteResults:
+              type: object
+              additionalProperties: true
+
+  responses:
+    InvalidRequest:
+      description: Request body could not be parsed or is missing required fields.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotReady:
+      description: Service has not yet connected its driver.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

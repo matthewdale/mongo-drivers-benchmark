@@ -1,0 +1,30 @@
+name: SmallDocInsertOne
+description: >
+  Measures insertOne latency for a small (~2KB) document, matching the
+  "Small doc insertOne" workload from the MongoDB Driver Performance Benchmark
+  spec. The collection is cleared once before the timed loop begins.
+command: insertOne
+collection: corpus
+database: perftest
+
+setup:
+  - command: deleteMany
+    body:
+      filter: {}
+
+# Inline small document. Replace with "@fixtures/small_doc.json" once the
+# benchmark fixture archive is available.
+body:
+  document:
+    x: 1
+    s: "The quick brown fox jumped over the lazy dog"
+    a: [1, 2, 3, 4, 5]
+
+run:
+  iterations: 100
+  minDurationSecs: 30
+  concurrency: 10
+
+# 2.75 MB — matches small_doc.json fixture size from the source spec.
+# Used to compute MB/s = datasetBytes / p50_latency.
+datasetBytes: 2750000
