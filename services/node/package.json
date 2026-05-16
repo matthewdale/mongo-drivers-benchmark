@@ -1,0 +1,18 @@
+{
+  "name": "mongo-drivers-benchmark-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js implementation of the MongoDB drivers load-test HTTP API.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "fastify": "^5.0.0",
+    "mongodb": "*"
+  }
+}

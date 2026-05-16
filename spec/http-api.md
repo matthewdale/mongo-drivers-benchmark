@@ -56,14 +56,14 @@ A service SHOULD verify cluster reachability at startup (e.g. a `ping` against t
 
 ### 5.1 Extended JSON
 
-All BSON-typed values in requests and responses MUST be represented in [MongoDB Extended JSON v2, canonical form](https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/). Implementations MUST NOT emit relaxed-form Extended JSON in responses, and SHOULD accept canonical form on input only.
+All BSON-typed values in requests and responses MUST be representable in [MongoDB Extended JSON v2](https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/). BSON types that have no lossless plain-JSON equivalent (ObjectId, Decimal128, Binary, DateTime, Timestamp, Regex, MinKey, MaxKey) MUST use the canonical `{$...}` envelope; numeric BSON types that have a lossless plain-JSON representation (Int32, Int64, Double) MUST be emitted as plain JSON numbers (this is the **relaxed** form for numerics, and it is required so generic JSON consumers can decode response bodies without an Extended-JSON-aware library).
 
-Concretely:
+Concretely, the required output form is:
 
 - ObjectId: `{"$oid": "<24-hex>"}`
-- 32-bit int: `{"$numberInt": "<int>"}`
-- 64-bit int: `{"$numberLong": "<int>"}`
-- Double: `{"$numberDouble": "<dec>"}` (or `"Infinity"`, `"-Infinity"`, `"NaN"`)
+- 32-bit int: plain JSON number (e.g. `42`)
+- 64-bit int: plain JSON number when it fits losslessly in IEEE-754 (i.e. `|n| <= 2^53`); otherwise `{"$numberLong": "<int>"}`
+- Double: plain JSON number; the special values `Infinity`, `-Infinity`, `NaN` MUST use `{"$numberDouble": "Infinity" | "-Infinity" | "NaN"}`
 - Decimal128: `{"$numberDecimal": "<dec>"}`
 - Binary: `{"$binary": {"base64": "<b64>", "subType": "<2-hex>"}}`
 - DateTime (ms since epoch): `{"$date": {"$numberLong": "<int>"}}`
@@ -71,7 +71,9 @@ Concretely:
 - Regex: `{"$regularExpression": {"pattern": "<str>", "options": "<str>"}}`
 - MinKey / MaxKey: `{"$minKey": 1}` / `{"$maxKey": 1}`
 
-Strings, booleans, `null`, plain integers (when small enough to fit a JSON number losslessly), and plain doubles MAY appear unwrapped; services MUST treat unwrapped JSON numbers and booleans identically to their canonical-form equivalents on input. On output, integer types MUST be emitted in canonical form (`$numberInt` / `$numberLong`) to preserve cross-driver determinism.
+Strings, booleans, and `null` appear as their plain JSON forms. On input, services MUST accept both canonical and relaxed forms for every numeric BSON type; e.g. both `42` and `{"$numberInt": "42"}` MUST be treated identically.
+
+> **Note:** Earlier drafts of this spec required fully canonical Extended JSON for numerics. This was changed in v1.0 because (a) the canonical envelope adds no information beyond the request's existing knowledge of expected BSON shapes and (b) it breaks downstream JSON consumers (including the validator's `documents[]` decoders) that decode numeric fields as native JSON numbers. The non-numeric BSON types are unaffected; they still require the canonical envelope.
 
 ## 6. `POST /v1/ops`
 
@@ -139,7 +141,11 @@ Per-op success `data` shapes are summarized below; full schemas live in `openapi
 | `countDocuments`                  | `count`                                                                                              |
 | `bulkWrite`                       | `inserted_count`, `matched_count`, `modified_count`, `deleted_count`, `upserted_count`, `inserted_ids{index → id}`, `upserted_ids{index → id}` |
 
-`inserted_id`, `inserted_ids[]`, `upserted_id`, and the `inserted_ids` / `upserted_ids` maps under `bulkWrite` MUST be emitted as Extended JSON v2 canonical values of the actual driver-returned `_id` BSON type. For the `bulkWrite` maps, keys MUST be decimal-string sub-op indices (e.g. `"0"`, `"1"`).
+`inserted_id`, `inserted_ids[]`, `upserted_id`, and the `inserted_ids` / `upserted_ids` maps under `bulkWrite` MUST be emitted as Extended JSON v2 values of the actual `_id` BSON type per §5.1 (canonical envelope for non-numeric types, plain JSON for numeric types). For the `bulkWrite` maps, keys MUST be decimal-string sub-op indices (e.g. `"0"`, `"1"`).
+
+For `bulkWrite`, every sub-op of name `insertOne` MUST produce an entry in `inserted_ids` keyed by the sub-op's index in `operations[]`. Because some drivers do not expose driver-generated `_id`s through their native `BulkWriteResult`, services MAY pre-assign a client-side `_id` (typically a fresh ObjectId) on any `insertOne` sub-op whose document does not already supply one. The pre-assigned value MUST then appear in the response `inserted_ids` map. Services MUST NOT mutate sub-ops whose `document._id` is already set.
+
+For `bulkWrite`, every sub-op that performs an upserting insert (an `updateOne` / `updateMany` / `replaceOne` with `upsert: true` that inserted a new document) MUST produce an entry in `upserted_ids` keyed by the sub-op's index, with the value taken from the driver's bulk-write result.
 
 ## 7. Error mapping
 

@@ -1,0 +1,20 @@
+{
+    "name": "mongodb-labs/mongo-drivers-benchmark-php",
+    "description": "PHP implementation of the MongoDB drivers load-test HTTP API.",
+    "type": "project",
+    "license": "Apache-2.0",
+    "require": {
+        "php": ">=8.3",
+        "ext-mongodb": "*",
+        "mongodb/mongodb": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "MongoDriversBenchmark\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "optimize-autoloader": true
+    }
+}
