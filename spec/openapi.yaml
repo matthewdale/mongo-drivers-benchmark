@@ -1,0 +1,1015 @@
+openapi: 3.1.0
+info:
+  title: MongoDB Drivers Load-Test HTTP API
+  version: 1.0.0
+  summary: Shared HTTP API implemented by every per-driver load-test service.
+  description: |
+    See `spec/http-api.md` for prose semantics, conformance rules (RFC 2119),
+    the error-code mapping table, and a worked end-to-end scenario.
+
+    All JSON bodies use MongoDB Extended JSON v2 (canonical) for BSON-typed
+    values so requests and responses round-trip identically across drivers.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development.
+
+paths:
+  /v1/ops:
+    post:
+      summary: Execute an ordered list of CRUD ops.
+      description: |
+        Ops execute sequentially in a single worker. No short-circuit on
+        failure: subsequent ops always run. The response is `200 OK` unless
+        the request itself is malformed (`400`) or the service is internally
+        broken (`5xx`); per-op success/failure is in the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpsRequest"
+            examples:
+              canonical:
+                $ref: "#/components/examples/CanonicalOpsRequest"
+      responses:
+        "200":
+          description: Ops dispatched; per-op outcomes in the body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpsResponse"
+              examples:
+                canonical:
+                  $ref: "#/components/examples/CanonicalOpsResponse"
+        "400":
+          description: Malformed request (schema violation, unknown op, empty ops).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestError"
+
+  /v1/admin/reset:
+    post:
+      summary: Drop the named databases.
+      description: |
+        Validator-only endpoint. Drops every database in `databases`. Returns
+        the list of names that were dropped.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetRequest"
+      responses:
+        "200":
+          description: Databases dropped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResetResponse"
+        "400":
+          description: "`databases` missing or empty."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestError"
+
+  /v1/info:
+    get:
+      summary: Service metadata.
+      responses:
+        "200":
+          description: Service identification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfoResponse"
+
+  /v1/health:
+    get:
+      summary: Liveness with a real cluster ping.
+      responses:
+        "200":
+          description: Client is connected and ping succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Client cannot reach the cluster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+components:
+  schemas:
+
+    # ----- Extended JSON v2 (canonical) BSON typedefs -----
+
+    ObjectId:
+      type: object
+      required: [$oid]
+      additionalProperties: false
+      properties:
+        $oid:
+          type: string
+          pattern: "^[0-9a-fA-F]{24}$"
+
+    Long:
+      type: object
+      required: [$numberLong]
+      additionalProperties: false
+      properties:
+        $numberLong:
+          type: string
+          pattern: "^-?[0-9]+$"
+
+    Int32:
+      type: object
+      required: [$numberInt]
+      additionalProperties: false
+      properties:
+        $numberInt:
+          type: string
+          pattern: "^-?[0-9]+$"
+
+    Double:
+      type: object
+      required: [$numberDouble]
+      additionalProperties: false
+      properties:
+        $numberDouble:
+          type: string
+          description: |
+            Decimal string, or one of "Infinity", "-Infinity", "NaN".
+
+    Decimal128:
+      type: object
+      required: [$numberDecimal]
+      additionalProperties: false
+      properties:
+        $numberDecimal:
+          type: string
+
+    BinData:
+      type: object
+      required: [$binary]
+      additionalProperties: false
+      properties:
+        $binary:
+          type: object
+          required: [base64, subType]
+          additionalProperties: false
+          properties:
+            base64:
+              type: string
+            subType:
+              type: string
+              pattern: "^[0-9a-fA-F]{2}$"
+
+    DateTime:
+      type: object
+      required: [$date]
+      additionalProperties: false
+      properties:
+        $date:
+          type: object
+          required: [$numberLong]
+          additionalProperties: false
+          properties:
+            $numberLong:
+              type: string
+              pattern: "^-?[0-9]+$"
+
+    Timestamp:
+      type: object
+      required: [$timestamp]
+      additionalProperties: false
+      properties:
+        $timestamp:
+          type: object
+          required: [t, i]
+          additionalProperties: false
+          properties:
+            t:
+              type: integer
+              minimum: 0
+            i:
+              type: integer
+              minimum: 0
+
+    Regex:
+      type: object
+      required: [$regularExpression]
+      additionalProperties: false
+      properties:
+        $regularExpression:
+          type: object
+          required: [pattern, options]
+          additionalProperties: false
+          properties:
+            pattern:
+              type: string
+            options:
+              type: string
+
+    MinKey:
+      type: object
+      required: [$minKey]
+      additionalProperties: false
+      properties:
+        $minKey:
+          const: 1
+
+    MaxKey:
+      type: object
+      required: [$maxKey]
+      additionalProperties: false
+      properties:
+        $maxKey:
+          const: 1
+
+    # A BSON document (any extended-JSON object). Used wherever we accept or
+    # return arbitrary user data: filters, projections, sorts, documents,
+    # update operators, aggregation stages, etc. We model it as a permissive
+    # JSON object; the canonical-form rules are enforced in prose.
+    BSONDocument:
+      type: object
+      additionalProperties: true
+
+    # ----- Op request variants -----
+
+    InsertOneOp:
+      type: object
+      required: [name, collection, document]
+      additionalProperties: false
+      properties:
+        name:
+          const: insertOne
+        collection:
+          type: string
+          minLength: 1
+        document:
+          $ref: "#/components/schemas/BSONDocument"
+
+    InsertManyOp:
+      type: object
+      required: [name, collection, documents]
+      additionalProperties: false
+      properties:
+        name:
+          const: insertMany
+        collection:
+          type: string
+          minLength: 1
+        documents:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/BSONDocument"
+        ordered:
+          type: boolean
+          default: true
+
+    FindOp:
+      type: object
+      required: [name, collection, filter]
+      additionalProperties: false
+      properties:
+        name:
+          const: find
+        collection:
+          type: string
+          minLength: 1
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+        projection:
+          $ref: "#/components/schemas/BSONDocument"
+        sort:
+          $ref: "#/components/schemas/BSONDocument"
+        skip:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 0
+
+    UpdateOneOp:
+      type: object
+      required: [name, collection, filter, update]
+      additionalProperties: false
+      properties:
+        name:
+          const: updateOne
+        collection:
+          type: string
+          minLength: 1
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+        update:
+          $ref: "#/components/schemas/BSONDocument"
+        upsert:
+          type: boolean
+          default: false
+        array_filters:
+          type: array
+          items:
+            $ref: "#/components/schemas/BSONDocument"
+
+    UpdateManyOp:
+      type: object
+      required: [name, collection, filter, update]
+      additionalProperties: false
+      properties:
+        name:
+          const: updateMany
+        collection:
+          type: string
+          minLength: 1
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+        update:
+          $ref: "#/components/schemas/BSONDocument"
+        upsert:
+          type: boolean
+          default: false
+        array_filters:
+          type: array
+          items:
+            $ref: "#/components/schemas/BSONDocument"
+
+    ReplaceOneOp:
+      type: object
+      required: [name, collection, filter, replacement]
+      additionalProperties: false
+      properties:
+        name:
+          const: replaceOne
+        collection:
+          type: string
+          minLength: 1
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+        replacement:
+          $ref: "#/components/schemas/BSONDocument"
+        upsert:
+          type: boolean
+          default: false
+
+    DeleteOneOp:
+      type: object
+      required: [name, collection, filter]
+      additionalProperties: false
+      properties:
+        name:
+          const: deleteOne
+        collection:
+          type: string
+          minLength: 1
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+
+    DeleteManyOp:
+      type: object
+      required: [name, collection, filter]
+      additionalProperties: false
+      properties:
+        name:
+          const: deleteMany
+        collection:
+          type: string
+          minLength: 1
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+
+    CountDocumentsOp:
+      type: object
+      required: [name, collection, filter]
+      additionalProperties: false
+      properties:
+        name:
+          const: countDocuments
+        collection:
+          type: string
+          minLength: 1
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+
+    AggregateOp:
+      type: object
+      required: [name, collection, pipeline]
+      additionalProperties: false
+      properties:
+        name:
+          const: aggregate
+        collection:
+          type: string
+          minLength: 1
+        pipeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/BSONDocument"
+
+    # A nested op inside bulkWrite.operations. Shares the same arg shapes as
+    # the top-level variants but omits `collection` (bulkWrite is single-
+    # collection: the collection comes from the enclosing bulkWrite op).
+    BulkInsertOne:
+      type: object
+      required: [name, document]
+      additionalProperties: false
+      properties:
+        name:
+          const: insertOne
+        document:
+          $ref: "#/components/schemas/BSONDocument"
+
+    BulkUpdateOne:
+      type: object
+      required: [name, filter, update]
+      additionalProperties: false
+      properties:
+        name:
+          const: updateOne
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+        update:
+          $ref: "#/components/schemas/BSONDocument"
+        upsert:
+          type: boolean
+          default: false
+        array_filters:
+          type: array
+          items:
+            $ref: "#/components/schemas/BSONDocument"
+
+    BulkUpdateMany:
+      type: object
+      required: [name, filter, update]
+      additionalProperties: false
+      properties:
+        name:
+          const: updateMany
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+        update:
+          $ref: "#/components/schemas/BSONDocument"
+        upsert:
+          type: boolean
+          default: false
+        array_filters:
+          type: array
+          items:
+            $ref: "#/components/schemas/BSONDocument"
+
+    BulkReplaceOne:
+      type: object
+      required: [name, filter, replacement]
+      additionalProperties: false
+      properties:
+        name:
+          const: replaceOne
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+        replacement:
+          $ref: "#/components/schemas/BSONDocument"
+        upsert:
+          type: boolean
+          default: false
+
+    BulkDeleteOne:
+      type: object
+      required: [name, filter]
+      additionalProperties: false
+      properties:
+        name:
+          const: deleteOne
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+
+    BulkDeleteMany:
+      type: object
+      required: [name, filter]
+      additionalProperties: false
+      properties:
+        name:
+          const: deleteMany
+        filter:
+          $ref: "#/components/schemas/BSONDocument"
+
+    BulkSubOp:
+      oneOf:
+        - $ref: "#/components/schemas/BulkInsertOne"
+        - $ref: "#/components/schemas/BulkUpdateOne"
+        - $ref: "#/components/schemas/BulkUpdateMany"
+        - $ref: "#/components/schemas/BulkReplaceOne"
+        - $ref: "#/components/schemas/BulkDeleteOne"
+        - $ref: "#/components/schemas/BulkDeleteMany"
+      discriminator:
+        propertyName: name
+        mapping:
+          insertOne:  "#/components/schemas/BulkInsertOne"
+          updateOne:  "#/components/schemas/BulkUpdateOne"
+          updateMany: "#/components/schemas/BulkUpdateMany"
+          replaceOne: "#/components/schemas/BulkReplaceOne"
+          deleteOne:  "#/components/schemas/BulkDeleteOne"
+          deleteMany: "#/components/schemas/BulkDeleteMany"
+
+    BulkWriteOp:
+      type: object
+      required: [name, collection, operations]
+      additionalProperties: false
+      properties:
+        name:
+          const: bulkWrite
+        collection:
+          type: string
+          minLength: 1
+        operations:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/BulkSubOp"
+        ordered:
+          type: boolean
+          default: true
+
+    Op:
+      oneOf:
+        - $ref: "#/components/schemas/InsertOneOp"
+        - $ref: "#/components/schemas/InsertManyOp"
+        - $ref: "#/components/schemas/FindOp"
+        - $ref: "#/components/schemas/UpdateOneOp"
+        - $ref: "#/components/schemas/UpdateManyOp"
+        - $ref: "#/components/schemas/ReplaceOneOp"
+        - $ref: "#/components/schemas/DeleteOneOp"
+        - $ref: "#/components/schemas/DeleteManyOp"
+        - $ref: "#/components/schemas/CountDocumentsOp"
+        - $ref: "#/components/schemas/AggregateOp"
+        - $ref: "#/components/schemas/BulkWriteOp"
+      discriminator:
+        propertyName: name
+        mapping:
+          insertOne:      "#/components/schemas/InsertOneOp"
+          insertMany:     "#/components/schemas/InsertManyOp"
+          find:           "#/components/schemas/FindOp"
+          updateOne:      "#/components/schemas/UpdateOneOp"
+          updateMany:     "#/components/schemas/UpdateManyOp"
+          replaceOne:     "#/components/schemas/ReplaceOneOp"
+          deleteOne:      "#/components/schemas/DeleteOneOp"
+          deleteMany:     "#/components/schemas/DeleteManyOp"
+          countDocuments: "#/components/schemas/CountDocumentsOp"
+          aggregate:      "#/components/schemas/AggregateOp"
+          bulkWrite:      "#/components/schemas/BulkWriteOp"
+
+    # ----- Op result variants -----
+
+    ErrorCode:
+      type: string
+      enum:
+        - DUPLICATE_KEY
+        - WRITE_CONFLICT
+        - TIMEOUT
+        - NETWORK
+        - AUTH
+        - NOT_FOUND
+        - INVALID_ARGUMENT
+        - INTERNAL
+
+    OpError:
+      type: object
+      required: [code, message]
+      additionalProperties: false
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          description: Driver error text, verbatim.
+        server_code:
+          type: integer
+          description: MongoDB server error code, when the driver exposes one.
+
+    OpResultFailure:
+      type: object
+      required: [op, ok, error]
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+        ok:
+          const: false
+        error:
+          $ref: "#/components/schemas/OpError"
+
+    # Per-op success result `data` payloads.
+    InsertOneData:
+      type: object
+      required: [inserted_id]
+      additionalProperties: false
+      properties:
+        inserted_id:
+          description: BSON value of the inserted _id (Extended JSON v2 canonical).
+
+    InsertManyData:
+      type: object
+      required: [inserted_ids, inserted_count]
+      additionalProperties: false
+      properties:
+        inserted_ids:
+          type: array
+          items: {}
+        inserted_count:
+          type: integer
+          minimum: 0
+
+    FindData:
+      type: object
+      required: [documents, count]
+      additionalProperties: false
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: "#/components/schemas/BSONDocument"
+        count:
+          type: integer
+          minimum: 0
+
+    UpdateData:
+      type: object
+      required: [matched_count, modified_count]
+      additionalProperties: false
+      properties:
+        matched_count:
+          type: integer
+          minimum: 0
+        modified_count:
+          type: integer
+          minimum: 0
+        upserted_id:
+          description: Present iff the op performed an upsert insert.
+
+    DeleteData:
+      type: object
+      required: [deleted_count]
+      additionalProperties: false
+      properties:
+        deleted_count:
+          type: integer
+          minimum: 0
+
+    CountData:
+      type: object
+      required: [count]
+      additionalProperties: false
+      properties:
+        count:
+          type: integer
+          minimum: 0
+
+    BulkWriteData:
+      type: object
+      required:
+        - inserted_count
+        - matched_count
+        - modified_count
+        - deleted_count
+        - upserted_count
+        - inserted_ids
+        - upserted_ids
+      additionalProperties: false
+      properties:
+        inserted_count:
+          type: integer
+          minimum: 0
+        matched_count:
+          type: integer
+          minimum: 0
+        modified_count:
+          type: integer
+          minimum: 0
+        deleted_count:
+          type: integer
+          minimum: 0
+        upserted_count:
+          type: integer
+          minimum: 0
+        inserted_ids:
+          type: object
+          description: Map from sub-op index (decimal string) to inserted _id.
+          additionalProperties: true
+        upserted_ids:
+          type: object
+          description: Map from sub-op index (decimal string) to upserted _id.
+          additionalProperties: true
+
+    InsertOneResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: insertOne
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/InsertOneData"
+
+    InsertManyResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: insertMany
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/InsertManyData"
+
+    FindResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: find
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/FindData"
+
+    UpdateOneResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: updateOne
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/UpdateData"
+
+    UpdateManyResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: updateMany
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/UpdateData"
+
+    ReplaceOneResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: replaceOne
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/UpdateData"
+
+    DeleteOneResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: deleteOne
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/DeleteData"
+
+    DeleteManyResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: deleteMany
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/DeleteData"
+
+    CountDocumentsResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: countDocuments
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/CountData"
+
+    AggregateResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: aggregate
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/FindData"
+
+    BulkWriteResult:
+      type: object
+      required: [op, ok, data]
+      additionalProperties: false
+      properties:
+        op:
+          const: bulkWrite
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/BulkWriteData"
+
+    OpResult:
+      oneOf:
+        - $ref: "#/components/schemas/InsertOneResult"
+        - $ref: "#/components/schemas/InsertManyResult"
+        - $ref: "#/components/schemas/FindResult"
+        - $ref: "#/components/schemas/UpdateOneResult"
+        - $ref: "#/components/schemas/UpdateManyResult"
+        - $ref: "#/components/schemas/ReplaceOneResult"
+        - $ref: "#/components/schemas/DeleteOneResult"
+        - $ref: "#/components/schemas/DeleteManyResult"
+        - $ref: "#/components/schemas/CountDocumentsResult"
+        - $ref: "#/components/schemas/AggregateResult"
+        - $ref: "#/components/schemas/BulkWriteResult"
+        - $ref: "#/components/schemas/OpResultFailure"
+      description: |
+        Discriminated by `(op, ok)`. A failure result always has the shape
+        `{op, ok: false, error}`. A success result's `data` shape is fixed
+        per `op` value (see the per-op variants above).
+
+    # ----- Top-level request / response envelopes -----
+
+    OpsRequest:
+      type: object
+      required: [database, ops]
+      additionalProperties: false
+      properties:
+        database:
+          type: string
+          minLength: 1
+        ops:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Op"
+
+    OpsResponse:
+      type: object
+      required: [results]
+      additionalProperties: false
+      properties:
+        results:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/OpResult"
+
+    ResetRequest:
+      type: object
+      required: [databases]
+      additionalProperties: false
+      properties:
+        databases:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+
+    ResetResponse:
+      type: object
+      required: [dropped]
+      additionalProperties: false
+      properties:
+        dropped:
+          type: array
+          items:
+            type: string
+            minLength: 1
+
+    InfoResponse:
+      type: object
+      required:
+        - driver
+        - driver_version
+        - language
+        - language_version
+        - spec_version
+      additionalProperties: false
+      properties:
+        driver:
+          type: string
+          description: Driver product name, e.g. "mongo-go-driver".
+        driver_version:
+          type: string
+        language:
+          type: string
+          enum: [go, python, node, java, php]
+        language_version:
+          type: string
+        spec_version:
+          type: string
+          description: Semver of the spec this service implements.
+
+    HealthResponse:
+      type: object
+      required: [ok]
+      additionalProperties: false
+      properties:
+        ok:
+          type: boolean
+        detail:
+          type: string
+          description: Optional human-readable detail when `ok` is false.
+
+    RequestError:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              enum:
+                - SCHEMA_VIOLATION
+                - UNKNOWN_OP
+                - EMPTY_OPS
+                - MISSING_FIELD
+                - BAD_REQUEST
+            message:
+              type: string
+
+  examples:
+    CanonicalOpsRequest:
+      summary: Canonical scenario from spec/http-api.md
+      value:
+        database: loadtest
+        ops:
+          - name: insertOne
+            collection: users
+            document:
+              _id:
+                $oid: "64b1f2a4d3e2c1b0a9876543"
+              name: Alice
+              n: 1
+          - name: find
+            collection: users
+            filter:
+              n:
+                $gte: 0
+            sort:
+              _id: 1
+            limit: 100
+          - name: updateMany
+            collection: users
+            filter:
+              n: 1
+            update:
+              $inc:
+                n: 1
+    CanonicalOpsResponse:
+      summary: Canonical scenario response
+      value:
+        results:
+          - op: insertOne
+            ok: true
+            data:
+              inserted_id:
+                $oid: "64b1f2a4d3e2c1b0a9876543"
+          - op: find
+            ok: true
+            data:
+              documents:
+                - _id:
+                    $oid: "64b1f2a4d3e2c1b0a9876543"
+                  name: Alice
+                  n: 1
+              count: 1
+          - op: updateMany
+            ok: true
+            data:
+              matched_count: 1
+              modified_count: 1
